@@ -1,0 +1,19 @@
+# Unity-generated folders
+Library/
+Temp/
+Obj/
+Build/
+Builds/
+Logs/
+UserSettings/
+MemoryCaptures/
+*.csproj
+*.sln
+*.suo
+*.user
+*.unityproj
+*.booproj
+
+# OS
+.DS_Store
+Thumbs.db

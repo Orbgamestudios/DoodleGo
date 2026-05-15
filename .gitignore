@@ -1,0 +1,32 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Node (in case anything's added later)
+node_modules/
+
+# Unity-generated folders inside unity-project/ (the project has its own .gitignore too)
+unity-project/Library/
+unity-project/Temp/
+unity-project/Obj/
+unity-project/Build/
+unity-project/Builds/
+unity-project/Logs/
+unity-project/UserSettings/
+unity-project/MemoryCaptures/
+*.csproj
+*.sln
+*.suo
+*.user
+*.unityproj
+*.booproj
+
+# Misc
+*.log

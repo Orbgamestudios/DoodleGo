@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Doodle Go</title>
+    <meta name="description" content="A doodle-themed 2D physics climber — swing your arms to reach the flag!">
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="start-screen" class="screen active">
+        <div class="start-content">
+            <div class="logo-container">
+                <h1 class="game-title">DOODLE&nbsp;GO</h1>
+                <p class="game-subtitle">Grab · Swing · Reach the Flag!</p>
+            </div>
+
+            <!-- Multiplayer / Room Code (UI scaffolding) -->
+            <div class="multiplayer">
+                <div class="mp-mode-tabs">
+                    <button id="mp-tab-local" class="mp-tab active">Local Couch</button>
+                    <button id="mp-tab-online" class="mp-tab">Online (room code)</button>
+                </div>
+                <div id="mp-online" class="mp-section hidden">
+                    <div class="mp-row">
+                        <button id="mp-create" class="mp-btn">Create Room</button>
+                        <span class="mp-or">or</span>
+                        <input id="mp-code" maxlength="8" placeholder="ABCD1234" class="mp-code-input">
+                        <button id="mp-join" class="mp-btn">Join</button>
+                    </div>
+                    <div id="mp-room" class="mp-room hidden">
+                        <div class="mp-room-header">
+                            <span>Room: <span id="mp-room-code" class="mp-code-badge">--------</span></span>
+                            <button id="mp-copy" class="mp-btn-ghost">Copy</button>
+                            <button id="mp-leave" class="mp-btn-ghost">Leave</button>
+                        </div>
+                        <div class="mp-room-body">
+                            <div class="mp-peers"><h4>In Room</h4><ul id="mp-peer-list"></ul></div>
+                            <div class="mp-chat">
+                                <h4>Chat</h4>
+                                <div id="mp-chat-log" class="mp-chat-log"></div>
+                                <div class="mp-chat-input">
+                                    <input id="mp-chat-text" placeholder="Type a message…">
+                                    <button id="mp-chat-send" class="mp-btn-ghost">Send</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mp-room-note">
+                            ⚠️ Networking is stubbed — UI works locally. Real online sync is on the to-do list.
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="lobby">
+                <h2>Lobby</h2>
+                <p class="lobby-hint">
+                    Click <strong>Add Player</strong>, then press any key (keyboard) or any controller button to claim a slot.
+                    Pick a name + color, hit <strong>Ready</strong>. Game starts when everyone's ready.
+                </p>
+                <div id="player-slots"></div>
+                <div class="lobby-actions">
+                    <button id="add-player-btn" class="add-player-btn">+ Add Player</button>
+                    <button id="start-btn" class="start-btn" disabled>Waiting for players…</button>
+                </div>
+                <div id="awaiting-input" class="awaiting-input hidden">
+                    <div class="awaiting-card">
+                        <div class="awaiting-spinner">⌨️ + 🎮</div>
+                        <div class="awaiting-title">Press any key or controller button…</div>
+                        <button id="awaiting-cancel">Cancel</button>
+                    </div>
+                </div>
+            </div>
+            <div class="controls-info">
+                <h3>Controls</h3>
+                <div class="controls-grid">
+                    <div class="control-item"><strong>Keyboard:</strong> <kbd>WASD</kbd> arms · <kbd>LMB</kbd>/<kbd>RMB</kbd> grab · <kbd>Q</kbd> draw · <kbd>P</kbd> dev panel</div>
+                    <div class="control-item"><strong>Gamepad:</strong> <kbd>Left Stick</kbd> arms · <kbd>LB</kbd>/<kbd>RB</kbd> grab · <kbd>Y</kbd> draw</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="game-screen" class="screen">
+        <canvas id="game-canvas" width="1200" height="700"></canvas>
+        <div id="hud">
+            <div id="player-hud"></div>
+            <div id="timer">⏱️ <span id="timer-text">0:00</span></div>
+        </div>
+        <div id="draw-mode-indicator" class="hidden">✏️ DRAW MODE — Click &amp; drag to draw · Q to exit · arms stay grabbed</div>
+        <div id="controls-hint">⌨️ WASD · LMB/RMB hold-grab · Q draw  ·  🎮 Stick · LB/RB hold-grab · Y draw (RB hold = stroke)</div>
+        <div id="death-overlay" class="hidden">
+            <div class="death-message">
+                <div class="death-icon">💀</div>
+                <div class="death-title">You Fell Into The Void!</div>
+                <div class="death-sub">Respawning in <span id="death-timer">5</span>s</div>
+            </div>
+        </div>
+    </div>
+    <div id="win-screen" class="screen">
+        <div class="win-content">
+            <h1 class="win-title">🎉 You Escaped!</h1>
+            <p class="win-subtitle">You reached the portal!</p>
+            <div class="win-stats">
+                <div class="stat"><span class="stat-label">Time</span><span id="win-time" class="stat-value">0:00</span></div>
+                <div class="stat"><span class="stat-label">Ink Used</span><span id="win-ink" class="stat-value">0%</span></div>
+            </div>
+            <button id="btn-replay" class="replay-btn">Play Again</button>
+        </div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+    <script>
+        // Diagnostic + cache-bust: also forwards the start-button click to the IIFE
+        // via window.__afi (set when game.js finishes loading).
+        document.addEventListener("DOMContentLoaded", () => {
+            const btn = document.getElementById("start-btn");
+            if (btn) btn.addEventListener("click", () => {
+                if (window.__afi && window.__afi.tryStartGame) window.__afi.tryStartGame();
+            });
+        });
+    </script>
+    <script src="game.js?v=20"></script>
+</body>
+</html>
