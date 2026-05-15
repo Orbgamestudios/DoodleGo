@@ -28,9 +28,14 @@
     const MINIMAP_W = 240;
     const MINIMAP_H = Math.round(MINIMAP_W * (WORLD_H / WORLD_W));
     // Team collision categories (Matter.js bitmasks)
+    // Collision categories. World/platforms use the default 0x0001.
+    // Player rig parts get unique bits so head ↔ forearm collide while
+    // head ↔ upper / head ↔ glove / forearm ↔ upper / forearm ↔ glove don't.
     const CAT_WORLD = 0x0001;
-    const CAT_RED   = 0x0002;
-    const CAT_BLUE  = 0x0004;
+    const CAT_HEAD  = 0x0010;
+    const CAT_UPPER = 0x0020;
+    const CAT_FORE  = 0x0040;
+    const CAT_GLOVE = 0x0080;
     // Flag goal — visual only (no collision, no grab). Win if head is near the base.
     const GOAL_POLE_H   = 130;
     const GOAL_POLE_W   = 4;
@@ -71,6 +76,7 @@
     let SPLIT_ZOOM_MAX   = 1.1;         // = CAM_ZOOM default; what you see when bunched up
     let BODY_SPIN_DAMP   = 0.85;        // multiplied into head.angularVelocity each frame
     let BODY_MAX_SPIN    = 0.05;        // hard cap on head angular velocity (rad/scaled-frame)
+    let SHOULDER_LIMIT_K = 0.25;        // soft restoring strength when upper-arm goes outside its half-circle range
 
     // --- STATE ---
     let engine, canvas, ctx;
@@ -372,12 +378,10 @@
 
     // Build a static Matter body from a shape descriptor.
     function makeShapeBody(p) {
-        const collisionFilter = { category: CAT_WORLD, mask: CAT_WORLD | CAT_RED | CAT_BLUE };
         const opts = {
             isStatic: true, label: "platform",
             friction: 1, frictionStatic: 1.5, restitution: 0,
-            slop: 0.02,
-            collisionFilter
+            slop: 0.02
         };
         if (p.type === "circle") {
             const b = Bodies.circle(p.x, p.y, p.r, opts);
@@ -399,17 +403,17 @@
         const spawnX = SPAWN_POSITIONS[idx % SPAWN_POSITIONS.length].x;
         const spawnY = SPAWN_POSITIONS[idx % SPAWN_POSITIONS.length].y;
 
-        const playerGroup = Body.nextGroup(true);
+        const playerGroup = Body.nextGroup(true);    // negative — used by upper + glove (no own-rig collision)
+        const bodyGroup   = Body.nextGroup(false);   // positive — used by head + forearm (always collide → physical limit)
 
         const head = Bodies.circle(spawnX, spawnY, HEAD_RADIUS, {
             label: "head",
             friction: HEAD_FRICTION, frictionStatic: HEAD_FRICTION_STATIC,
             frictionAir: HEAD_AIR_DAMP, restitution: HEAD_RESTITUTION,
             density: HEAD_DENSITY,
-            // Body CAN rotate. Heavy angular damping + a velocity cap (in updatePlayer)
-            // keep it from spinning to high RPM from arm-pull torque. The shoulder
-            // clamp keeps each upper arm on its own half-plane of the body.
-            collisionFilter: { group: playerGroup }
+            // Head + own forearm share the positive bodyGroup → they ALWAYS collide.
+            // Category mask still excludes upper-arm + glove so those don't bump.
+            collisionFilter: { group: bodyGroup, category: CAT_HEAD, mask: CAT_WORLD | CAT_FORE }
         });
 
         const playerObj = {
@@ -443,30 +447,35 @@
             const sx = spawnX + sign * SHOULDER_X;
             const sy = spawnY + SHOULDER_Y;
 
-            // Upper arm — CANNOT grab. No collision label that would imply grabbable.
+            // Upper arm — playerGroup (negative) keeps it from colliding with own
+            // glove. Mask excludes everything except world so it doesn't bump heads
+            // or forearms anywhere either.
             const upper = Bodies.rectangle(sx, sy + UPPER_LEN / 2, ARM_W, UPPER_LEN, {
                 label: "armUpper",
                 density: ARM_DENSITY, friction: 0.5, frictionAir: ARM_AIR_DAMP, restitution: 0.02,
                 chamfer: { radius: ARM_W / 2 - 0.5 },
-                collisionFilter: { group: playerGroup }
+                collisionFilter: { group: playerGroup, category: CAT_UPPER, mask: CAT_WORLD }
             });
 
-            // Forearm — also CANNOT grab. Only the glove can.
+            // Forearm — bodyGroup (positive) shared with the head → they always
+            // collide, providing a physical stop that prevents the arm from spinning
+            // through the body. Doesn't collide with own upper-arm or glove.
             const fore = Bodies.rectangle(sx, sy + UPPER_LEN + FORE_LEN / 2, ARM_W, FORE_LEN, {
                 label: "armFore",
                 density: ARM_DENSITY, friction: 0.5, frictionAir: ARM_AIR_DAMP, restitution: 0.02,
                 chamfer: { radius: ARM_W / 2 - 0.5 },
-                collisionFilter: { group: playerGroup }
+                collisionFilter: { group: bodyGroup, category: CAT_FORE, mask: CAT_WORLD | CAT_HEAD }
             });
 
             // Glove — separate physics body attached to the OUTSIDE tip of the forearm.
-            // This is the ONLY part that can trigger a grab.
+            // This is the ONLY part that can trigger a grab. Mask includes CAT_GLOVE so
+            // cross-player gloves can collide (= teammate-glove grab via contact event).
             const gloveCY = sy + UPPER_LEN + FORE_LEN + GLOVE_RADIUS - 3;
             const glove = Bodies.circle(sx, gloveCY, GLOVE_RADIUS, {
                 label: "glove",
                 density: GLOVE_DENSITY, friction: 0.7, frictionAir: GLOVE_AIR_DAMP, restitution: 0.02,
                 inertia: Infinity, inverseInertia: 0,
-                collisionFilter: { group: playerGroup }
+                collisionFilter: { group: playerGroup, category: CAT_GLOVE, mask: CAT_WORLD | CAT_GLOVE }
             });
             glove._side = side;
 
@@ -676,7 +685,26 @@
             Body.setAngularVelocity(head, Math.sign(head.angularVelocity) * BODY_MAX_SPIN);
         }
 
-        // (Shoulder clamp removed — was bugging the chain and blocking smooth swing/grab.)
+        // 5) Soft upper-arm angle limit (no hard snap). Each upper arm is bounded to
+        //    its half-plane of the body — right arm sweeps down → right → up;
+        //    left arm sweeps down → left → up. We add a small restoring angular
+        //    velocity if it tries to leave the range. Smooth, not snap.
+        for (const arm of p.arms) softShoulderLimit(arm, head);
+    }
+
+    function softShoulderLimit(arm, head) {
+        const sign = arm.side === "left" ? -1 : 1;
+        let rel = arm.upper.angle - head.angle;
+        while (rel >  Math.PI) rel -= 2 * Math.PI;
+        while (rel < -Math.PI) rel += 2 * Math.PI;
+        const lo = sign > 0 ? 0 : -Math.PI;
+        const hi = sign > 0 ? Math.PI : 0;
+        let push = 0;
+        if (rel < lo)      push = (lo - rel) * SHOULDER_LIMIT_K;        // nudge back toward lo
+        else if (rel > hi) push = -(rel - hi) * SHOULDER_LIMIT_K;       // nudge back toward hi
+        if (push !== 0) {
+            Body.setAngularVelocity(arm.upper, arm.upper.angularVelocity + push);
+        }
     }
 
     // --- GRAB (glove-only, intent-based) ---
@@ -817,7 +845,7 @@
             density: DRAW_DENSITY,
             slop: 0.02,
             sleepThreshold: 30,
-            collisionFilter: { category: CAT_WORLD, mask: CAT_WORLD | CAT_RED | CAT_BLUE }
+            // No explicit category/mask — drawings collide with everything by default.
         });
         Composite.add(engine.world, body);
 
@@ -2377,6 +2405,12 @@
             help: "Hard cap on how fast the body can rotate.",
             get: () => BODY_MAX_SPIN,
             set: v => { BODY_MAX_SPIN = v; }
+        },
+        shoulderLimitK: {
+            label: "Shoulder Limit Strength (soft)", min: 0, max: 1, step: 0.01, group: "Arms",
+            help: "Soft restoring force when an upper arm tries to swing across the body. 0 = no limit; 1 = stiff snap-back.",
+            get: () => SHOULDER_LIMIT_K,
+            set: v => { SHOULDER_LIMIT_K = v; }
         },
 
         // --- Arms ---
