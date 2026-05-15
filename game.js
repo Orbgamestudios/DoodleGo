@@ -676,25 +676,58 @@
         for (const arm of p.arms) hardShoulderLimit(arm, head);
     }
 
-    // Hard half-circle limit. The upper arm direction (from shoulder toward elbow)
-    // in the body's local frame is (-sin(rel), cos(rel)). For the elbow to stay
-    // OUTSIDE the head circle (the semicircle region in the request image):
-    //   right arm: rel ∈ [-π, 0]   — sweep down → right side → up
-    //   left  arm: rel ∈ [ 0, π]   — sweep down → left side  → up
-    // Anything outside puts the elbow on the WRONG side (and inside the head body).
+    // Half-circle elbow limit. The upper arm direction (shoulder → elbow) in the
+    // body's local frame is (-sin(rel), cos(rel)). Allowed arc:
+    //   right arm: rel ∈ [-π, 0]   (down → right → up)
+    //   left  arm: rel ∈ [ 0, π]   (down → left  → up)
+    // Plus 10° padding at each end (just past straight-up and just past straight-down).
+    //
+    // To prevent the snap-to-opposite-end bug from naive angle wrapping (when the
+    // arm spins past straight-up, rel jumps from −π to +π and the clamp would
+    // pull it all the way to "down"), we wrap `rel` to the range CENTERED on the
+    // arc midpoint. That always keeps `rel` in the right "lap" — no teleporting.
+    //
+    // A quadratic decel zone of ~25° before each boundary brakes outward
+    // body-relative angular velocity so the arm comes to rest at the limit
+    // smoothly. Inward momentum and head-following spin are preserved.
+    const SHOULDER_MARGIN = 10 * Math.PI / 180;     // 10° padding past up + down
+    const SHOULDER_DECEL_ZONE = 0.45;               // ~26°
     function hardShoulderLimit(arm, head) {
         const sign = arm.side === "left" ? -1 : 1;
+        const center = sign > 0 ? -Math.PI / 2 : Math.PI / 2;
+        const halfRange = Math.PI / 2 + SHOULDER_MARGIN;
+        const lo = center - halfRange;
+        const hi = center + halfRange;
+
         let rel = arm.upper.angle - head.angle;
-        while (rel >  Math.PI) rel -= 2 * Math.PI;
-        while (rel < -Math.PI) rel += 2 * Math.PI;
-        const lo = sign > 0 ? -Math.PI : 0;
-        const hi = sign > 0 ?  0 : Math.PI;
+        while (rel - center >  Math.PI) rel -= 2 * Math.PI;
+        while (rel - center < -Math.PI) rel += 2 * Math.PI;
+
+        const headAv = head.angularVelocity || 0;
+        const relAv  = arm.upper.angularVelocity - headAv;
+
+        // Hard stops at the boundary
         if (rel < lo) {
             Body.setAngle(arm.upper, head.angle + lo);
-            if (arm.upper.angularVelocity < 0) Body.setAngularVelocity(arm.upper, 0);
-        } else if (rel > hi) {
+            if (relAv < 0) Body.setAngularVelocity(arm.upper, headAv);
+            return;
+        }
+        if (rel > hi) {
             Body.setAngle(arm.upper, head.angle + hi);
-            if (arm.upper.angularVelocity > 0) Body.setAngularVelocity(arm.upper, 0);
+            if (relAv > 0) Body.setAngularVelocity(arm.upper, headAv);
+            return;
+        }
+
+        // Decel zone — quadratic ramp that bleeds outward velocity to zero before
+        // the boundary, so the arm settles instead of slamming into the limit.
+        if (rel > hi - SHOULDER_DECEL_ZONE && relAv > 0) {
+            const t = (rel - (hi - SHOULDER_DECEL_ZONE)) / SHOULDER_DECEL_ZONE;
+            const damp = Math.max(0, 1 - t * t * 4);
+            Body.setAngularVelocity(arm.upper, headAv + relAv * damp);
+        } else if (rel < lo + SHOULDER_DECEL_ZONE && relAv < 0) {
+            const t = ((lo + SHOULDER_DECEL_ZONE) - rel) / SHOULDER_DECEL_ZONE;
+            const damp = Math.max(0, 1 - t * t * 4);
+            Body.setAngularVelocity(arm.upper, headAv + relAv * damp);
         }
     }
 
