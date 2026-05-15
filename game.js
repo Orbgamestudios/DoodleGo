@@ -58,6 +58,9 @@
     let HEAD_AIR_DAMP    = 0.02;
     let ARM_AIR_DAMP     = 0.04;
     let GLOVE_AIR_DAMP   = 0.04;
+    let HEAD_FRICTION        = 0.25;   // kinetic friction when sliding on platforms
+    let HEAD_FRICTION_STATIC = 0.5;    // resistance to start sliding
+    let HEAD_RESTITUTION     = 0.05;   // bounciness when colliding
     let CURSOR_SENS      = 12;
     let OBJ_AVG_SIZE     = 55;
     let OBJS_PER_PATH    = 14;
@@ -400,7 +403,8 @@
 
         const head = Bodies.circle(spawnX, spawnY, HEAD_RADIUS, {
             label: "head",
-            friction: 0.25, frictionAir: HEAD_AIR_DAMP, restitution: 0.05,
+            friction: HEAD_FRICTION, frictionStatic: HEAD_FRICTION_STATIC,
+            frictionAir: HEAD_AIR_DAMP, restitution: HEAD_RESTITUTION,
             density: HEAD_DENSITY,
             // Body CAN rotate. Heavy angular damping + a velocity cap (in updatePlayer)
             // keep it from spinning to high RPM from arm-pull torque. The shoulder
@@ -672,34 +676,7 @@
             Body.setAngularVelocity(head, Math.sign(head.angularVelocity) * BODY_MAX_SPIN);
         }
 
-        // 5) Shoulder clamp — keep each upper arm on its own side of the body so it
-        //    can't swing through the head. Right arm: rel ∈ [0, π]; left: [-π, 0].
-        for (const arm of p.arms) clampShoulderAngle(arm, head);
-    }
-
-    function clampShoulderAngle(arm, head) {
-        const sign = arm.side === "left" ? -1 : 1;
-        let rel = arm.upper.angle - head.angle;
-        while (rel >  Math.PI) rel -= 2 * Math.PI;
-        while (rel <= -Math.PI) rel += 2 * Math.PI;
-        const lo = sign > 0 ? 0 : -Math.PI;
-        const hi = sign > 0 ? Math.PI : 0;
-        if (rel < lo || rel > hi) {
-            const distLo = Math.abs(rel - lo);
-            const distHi = Math.abs(rel - hi);
-            const target = (distLo < distHi) ? lo : hi;
-            Body.setAngle(arm.upper, head.angle + target);
-            Body.setAngularVelocity(arm.upper, 0);
-            // Re-anchor the forearm to the upper-arm tip so the chain stays connected
-            const ua = arm.upper.angle;
-            const tipX = arm.upper.position.x + (UPPER_LEN / 2) * -Math.sin(ua);
-            const tipY = arm.upper.position.y + (UPPER_LEN / 2) *  Math.cos(ua);
-            const fa = arm.fore.angle;
-            Body.setPosition(arm.fore, {
-                x: tipX + (FORE_LEN / 2) * -Math.sin(fa),
-                y: tipY + (FORE_LEN / 2) *  Math.cos(fa)
-            });
-        }
+        // (Shoulder clamp removed — was bugging the chain and blocking smooth swing/grab.)
     }
 
     // --- GRAB (glove-only, intent-based) ---
@@ -2370,6 +2347,24 @@
             help: "Air resistance on the head. Higher = more drag.",
             get: () => HEAD_AIR_DAMP,
             set: v => { HEAD_AIR_DAMP = v; for (const p of players) p.head.frictionAir = v; }
+        },
+        headFriction: {
+            label: "Head Friction (sliding on platforms)", min: 0, max: 2, step: 0.01, group: "Body",
+            help: "Kinetic friction between the head and platforms. 0 = ice, 1 = rubber.",
+            get: () => HEAD_FRICTION,
+            set: v => { HEAD_FRICTION = v; for (const p of players) p.head.friction = v; }
+        },
+        headFrictionStatic: {
+            label: "Head Friction (static — start of slide)", min: 0, max: 2, step: 0.01, group: "Body",
+            help: "Resistance to starting to slide. Higher = head sticks to platforms more before moving.",
+            get: () => HEAD_FRICTION_STATIC,
+            set: v => { HEAD_FRICTION_STATIC = v; for (const p of players) p.head.frictionStatic = v; }
+        },
+        headRestitution: {
+            label: "Head Bounciness", min: 0, max: 1, step: 0.01, group: "Body",
+            help: "How bouncy the head is on collision. 0 = thud, 1 = super-ball.",
+            get: () => HEAD_RESTITUTION,
+            set: v => { HEAD_RESTITUTION = v; for (const p of players) p.head.restitution = v; }
         },
         bodySpinDamp: {
             label: "Body Spin Damping", min: 0.5, max: 1, step: 0.01, group: "Body",
