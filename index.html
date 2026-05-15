@@ -107,10 +107,23 @@
             <button id="btn-replay" class="replay-btn">Play Again</button>
         </div>
     </div>
+    <!--
+        Physics — currently Matter.js. Rapier 2D is preloaded (next to it) so the
+        upcoming port in game.js has the engine available without a reload. The
+        live game still runs on Matter; the Rapier port lands across the next
+        commit(s). See DEVLOG Phase 16 / CLAUDE.md.
+    -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.20.0/matter.min.js"></script>
+    <script type="module">
+        import RAPIER from "https://cdn.skypack.dev/@dimforge/rapier2d-compat@0.14.0";
+        window._rapierReady = (async () => {
+            await RAPIER.init();
+            window.RAPIER = RAPIER;
+            return RAPIER;
+        })();
+    </script>
     <script>
-        // Diagnostic + cache-bust: also forwards the start-button click to the IIFE
-        // via window.__afi (set when game.js finishes loading).
+        // Forward the start-button click into the IIFE once it's ready
         document.addEventListener("DOMContentLoaded", () => {
             const btn = document.getElementById("start-btn");
             if (btn) btn.addEventListener("click", () => {
@@ -118,6 +131,6 @@
             });
         });
     </script>
-    <script src="game.js?v=20"></script>
+    <script src="game.js?v=21"></script>
 </body>
 </html>

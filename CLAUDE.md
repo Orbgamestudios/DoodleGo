@@ -4,7 +4,12 @@ This file layers on top of `~/.claude/CLAUDE.md`. Read both.
 
 ## Stack (non-negotiable without discussion)
 
-- Vanilla JS + HTML/CSS, Matter.js via CDN, Canvas2D rendering.
+- Vanilla JS + HTML/CSS, Canvas2D rendering.
+- **Physics — Matter.js today; migrating to Rapier 2D (Rust → WASM).**
+  Both CDNs are preloaded in `index.html`. Rapier is available as
+  `window.RAPIER` once `await window._rapierReady` resolves. `game.js` still
+  uses Matter; the port lands across the next commit(s). See DEVLOG Phase 16
+  (in-progress).
 - **No build step.** No bundler, no transpiler, no TypeScript.
 - `game.js` is one file. Do not split it.
 - Cache-bust: the `<script>` tag in `index.html` uses `?v=N`. Bump it on every meaningful change to `game.js`.
