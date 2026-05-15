@@ -29,7 +29,7 @@ If a user request would violate any of the above, push back in one sentence and 
 - **Don't introduce polygon platforms.** Generator is circles + axis-aligned rectangles. Polygons caused unstable grabs.
 - **Don't add side walls.** Falling off any edge is death — that's the design.
 - **Don't make any body but the glove trigger grabs.** Glove only, tagged `_arm`. Anything else is the "elbow grab" bug.
-- **Don't unlock head rotation.** `inertia: Infinity` on the head, deliberately. Stretching torques the torso otherwise.
+- **Head rotation is currently FREE** (no `inertia: Infinity`). The body-relative shoulder hard-clamp keeps each elbow on its own outer half-circle of the body so the rig stays sane. If torque-from-stretching ever feels too whippy, reintroduce `inertia: Infinity` on the head — that's the stable fallback.
 - **Don't share `playerGroup` across players.** Each player gets `Body.nextGroup(true)`.
 
 ## Standard workflows

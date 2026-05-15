@@ -403,9 +403,9 @@
             friction: HEAD_FRICTION, frictionStatic: HEAD_FRICTION_STATIC,
             frictionAir: HEAD_AIR_DAMP, restitution: HEAD_RESTITUTION,
             density: HEAD_DENSITY,
-            // LOCKED rotation — body can't spin from arm-pull torque. The shoulder
-            // hard-clamp (in updatePlayer) keeps each upper arm in its half-circle.
-            inertia: Infinity, inverseInertia: 0,
+            // Body spins freely. The shoulder hard-clamp (in updatePlayer) is
+            // body-relative — it rotates with the head, so the elbow always stays
+            // on the correct outer half of the body.
             collisionFilter: { group: playerGroup }
         });
 
@@ -676,13 +676,19 @@
         for (const arm of p.arms) hardShoulderLimit(arm, head);
     }
 
+    // Hard half-circle limit. The upper arm direction (from shoulder toward elbow)
+    // in the body's local frame is (-sin(rel), cos(rel)). For the elbow to stay
+    // OUTSIDE the head circle (the semicircle region in the request image):
+    //   right arm: rel ∈ [-π, 0]   — sweep down → right side → up
+    //   left  arm: rel ∈ [ 0, π]   — sweep down → left side  → up
+    // Anything outside puts the elbow on the WRONG side (and inside the head body).
     function hardShoulderLimit(arm, head) {
         const sign = arm.side === "left" ? -1 : 1;
         let rel = arm.upper.angle - head.angle;
         while (rel >  Math.PI) rel -= 2 * Math.PI;
         while (rel < -Math.PI) rel += 2 * Math.PI;
-        const lo = sign > 0 ? 0 : -Math.PI;
-        const hi = sign > 0 ? Math.PI : 0;
+        const lo = sign > 0 ? -Math.PI : 0;
+        const hi = sign > 0 ?  0 : Math.PI;
         if (rel < lo) {
             Body.setAngle(arm.upper, head.angle + lo);
             if (arm.upper.angularVelocity < 0) Body.setAngularVelocity(arm.upper, 0);
