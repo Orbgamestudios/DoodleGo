@@ -28,14 +28,8 @@
     const MINIMAP_W = 240;
     const MINIMAP_H = Math.round(MINIMAP_W * (WORLD_H / WORLD_W));
     // Team collision categories (Matter.js bitmasks)
-    // Collision categories. World/platforms use the default 0x0001.
-    // Player rig parts get unique bits so head ↔ forearm collide while
-    // head ↔ upper / head ↔ glove / forearm ↔ upper / forearm ↔ glove don't.
+    // Collision categories. Default is 0x0001 (used by everything implicitly).
     const CAT_WORLD = 0x0001;
-    const CAT_HEAD  = 0x0010;
-    const CAT_UPPER = 0x0020;
-    const CAT_FORE  = 0x0040;
-    const CAT_GLOVE = 0x0080;
     // Flag goal — visual only (no collision, no grab). Win if head is near the base.
     const GOAL_POLE_H   = 130;
     const GOAL_POLE_W   = 4;
@@ -74,9 +68,8 @@
     let NAMETAG_SIZE     = 11;          // px (in world) for floating name above heads
     let SPLIT_ZOOM_MIN   = 0.55;        // min zoom factor used when players are far apart (single-cam mode)
     let SPLIT_ZOOM_MAX   = 1.1;         // = CAM_ZOOM default; what you see when bunched up
-    let BODY_SPIN_DAMP   = 0.85;        // multiplied into head.angularVelocity each frame
-    let BODY_MAX_SPIN    = 0.05;        // hard cap on head angular velocity (rad/scaled-frame)
-    let SHOULDER_LIMIT_K = 0.25;        // soft restoring strength when upper-arm goes outside its half-circle range
+    // (Body rotation locked via inertia:Infinity — no spin damp / cap needed.
+    //  Shoulder limit is a hard clamp — no elasticity tunable.)
 
     // --- STATE ---
     let engine, canvas, ctx;
@@ -403,17 +396,17 @@
         const spawnX = SPAWN_POSITIONS[idx % SPAWN_POSITIONS.length].x;
         const spawnY = SPAWN_POSITIONS[idx % SPAWN_POSITIONS.length].y;
 
-        const playerGroup = Body.nextGroup(true);    // negative — used by upper + glove (no own-rig collision)
-        const bodyGroup   = Body.nextGroup(false);   // positive — used by head + forearm (always collide → physical limit)
+        const playerGroup = Body.nextGroup(true);
 
         const head = Bodies.circle(spawnX, spawnY, HEAD_RADIUS, {
             label: "head",
             friction: HEAD_FRICTION, frictionStatic: HEAD_FRICTION_STATIC,
             frictionAir: HEAD_AIR_DAMP, restitution: HEAD_RESTITUTION,
             density: HEAD_DENSITY,
-            // Head + own forearm share the positive bodyGroup → they ALWAYS collide.
-            // Category mask still excludes upper-arm + glove so those don't bump.
-            collisionFilter: { group: bodyGroup, category: CAT_HEAD, mask: CAT_WORLD | CAT_FORE }
+            // LOCKED rotation — body can't spin from arm-pull torque. The shoulder
+            // hard-clamp (in updatePlayer) keeps each upper arm in its half-circle.
+            inertia: Infinity, inverseInertia: 0,
+            collisionFilter: { group: playerGroup }
         });
 
         const playerObj = {
@@ -447,35 +440,30 @@
             const sx = spawnX + sign * SHOULDER_X;
             const sy = spawnY + SHOULDER_Y;
 
-            // Upper arm — playerGroup (negative) keeps it from colliding with own
-            // glove. Mask excludes everything except world so it doesn't bump heads
-            // or forearms anywhere either.
+            // Upper arm — shares playerGroup so it doesn't collide with own rig.
             const upper = Bodies.rectangle(sx, sy + UPPER_LEN / 2, ARM_W, UPPER_LEN, {
                 label: "armUpper",
                 density: ARM_DENSITY, friction: 0.5, frictionAir: ARM_AIR_DAMP, restitution: 0.02,
                 chamfer: { radius: ARM_W / 2 - 0.5 },
-                collisionFilter: { group: playerGroup, category: CAT_UPPER, mask: CAT_WORLD }
+                collisionFilter: { group: playerGroup }
             });
 
-            // Forearm — bodyGroup (positive) shared with the head → they always
-            // collide, providing a physical stop that prevents the arm from spinning
-            // through the body. Doesn't collide with own upper-arm or glove.
+            // Forearm — same group as the rest. NO interactions with the head; the
+            // body is locked anyway, and the upper-arm hard-clamp limits reach.
             const fore = Bodies.rectangle(sx, sy + UPPER_LEN + FORE_LEN / 2, ARM_W, FORE_LEN, {
                 label: "armFore",
                 density: ARM_DENSITY, friction: 0.5, frictionAir: ARM_AIR_DAMP, restitution: 0.02,
                 chamfer: { radius: ARM_W / 2 - 0.5 },
-                collisionFilter: { group: bodyGroup, category: CAT_FORE, mask: CAT_WORLD | CAT_HEAD }
+                collisionFilter: { group: playerGroup }
             });
 
-            // Glove — separate physics body attached to the OUTSIDE tip of the forearm.
-            // This is the ONLY part that can trigger a grab. Mask includes CAT_GLOVE so
-            // cross-player gloves can collide (= teammate-glove grab via contact event).
+            // Glove — only part that triggers grabs.
             const gloveCY = sy + UPPER_LEN + FORE_LEN + GLOVE_RADIUS - 3;
             const glove = Bodies.circle(sx, gloveCY, GLOVE_RADIUS, {
                 label: "glove",
                 density: GLOVE_DENSITY, friction: 0.7, frictionAir: GLOVE_AIR_DAMP, restitution: 0.02,
                 inertia: Infinity, inverseInertia: 0,
-                collisionFilter: { group: playerGroup, category: CAT_GLOVE, mask: CAT_WORLD | CAT_GLOVE }
+                collisionFilter: { group: playerGroup }
             });
             glove._side = side;
 
@@ -679,31 +667,28 @@
             }
         }
 
-        // 4) Damp + cap the body's spin so arm-pull torque doesn't whip it around.
-        head.angularVelocity *= BODY_SPIN_DAMP;
-        if (Math.abs(head.angularVelocity) > BODY_MAX_SPIN) {
-            Body.setAngularVelocity(head, Math.sign(head.angularVelocity) * BODY_MAX_SPIN);
-        }
+        // (Body rotation is locked via inertia:Infinity — no spin to damp.)
 
-        // 5) Soft upper-arm angle limit (no hard snap). Each upper arm is bounded to
-        //    its half-plane of the body — right arm sweeps down → right → up;
-        //    left arm sweeps down → left → up. We add a small restoring angular
-        //    velocity if it tries to leave the range. Smooth, not snap.
-        for (const arm of p.arms) softShoulderLimit(arm, head);
+        // 4) Hard upper-arm angle limit (no elasticity). Right arm rel ∈ [0, π],
+        //    left ∈ [-π, 0]. Beyond the boundary the angle is clamped and only
+        //    the velocity component pushing further out is zeroed — momentum back
+        //    into the allowed range is preserved.
+        for (const arm of p.arms) hardShoulderLimit(arm, head);
     }
 
-    function softShoulderLimit(arm, head) {
+    function hardShoulderLimit(arm, head) {
         const sign = arm.side === "left" ? -1 : 1;
         let rel = arm.upper.angle - head.angle;
         while (rel >  Math.PI) rel -= 2 * Math.PI;
         while (rel < -Math.PI) rel += 2 * Math.PI;
         const lo = sign > 0 ? 0 : -Math.PI;
         const hi = sign > 0 ? Math.PI : 0;
-        let push = 0;
-        if (rel < lo)      push = (lo - rel) * SHOULDER_LIMIT_K;        // nudge back toward lo
-        else if (rel > hi) push = -(rel - hi) * SHOULDER_LIMIT_K;       // nudge back toward hi
-        if (push !== 0) {
-            Body.setAngularVelocity(arm.upper, arm.upper.angularVelocity + push);
+        if (rel < lo) {
+            Body.setAngle(arm.upper, head.angle + lo);
+            if (arm.upper.angularVelocity < 0) Body.setAngularVelocity(arm.upper, 0);
+        } else if (rel > hi) {
+            Body.setAngle(arm.upper, head.angle + hi);
+            if (arm.upper.angularVelocity > 0) Body.setAngularVelocity(arm.upper, 0);
         }
     }
 
@@ -2394,24 +2379,7 @@
             get: () => HEAD_RESTITUTION,
             set: v => { HEAD_RESTITUTION = v; for (const p of players) p.head.restitution = v; }
         },
-        bodySpinDamp: {
-            label: "Body Spin Damping", min: 0.5, max: 1, step: 0.01, group: "Body",
-            help: "Multiplied into head angular velocity each frame. 1 = no damping; 0.5 = halts almost instantly.",
-            get: () => BODY_SPIN_DAMP,
-            set: v => { BODY_SPIN_DAMP = v; }
-        },
-        bodyMaxSpin: {
-            label: "Body Max Spin (rad/frame)", min: 0.005, max: 0.5, step: 0.005, group: "Body",
-            help: "Hard cap on how fast the body can rotate.",
-            get: () => BODY_MAX_SPIN,
-            set: v => { BODY_MAX_SPIN = v; }
-        },
-        shoulderLimitK: {
-            label: "Shoulder Limit Strength (soft)", min: 0, max: 1, step: 0.01, group: "Arms",
-            help: "Soft restoring force when an upper arm tries to swing across the body. 0 = no limit; 1 = stiff snap-back.",
-            get: () => SHOULDER_LIMIT_K,
-            set: v => { SHOULDER_LIMIT_K = v; }
-        },
+        // (Body rotation locked + hard shoulder clamp — no spin/limit sliders.)
 
         // --- Arms ---
         handDrive: {
