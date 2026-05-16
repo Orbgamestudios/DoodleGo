@@ -692,6 +692,17 @@
     // smoothly. Inward momentum and head-following spin are preserved.
     const SHOULDER_MARGIN = 10 * Math.PI / 180;     // 10° padding past up + down
     const SHOULDER_DECEL_ZONE = 0.45;               // ~26°
+
+    // When the shoulder limit decelerates the arm, this fraction of the removed
+    // body-relative angular velocity is donated to the head as rotation in the
+    // same direction the arm was pushing. The shoulder limit becomes a momentum
+    // transfer: instead of the body losing energy to the constraint, the head
+    // spins the way that relieves pressure on the limit.
+    //   0   = old behavior (all energy goes to braking the arm)
+    //   0.5 = half to body spin, half to arm decel
+    //   1   = arm absolute angVel unchanged; the body is shoved instead
+    let SHOULDER_TRANSFER = 0.6;
+
     function hardShoulderLimit(arm, head) {
         const sign = arm.side === "left" ? -1 : 1;
         const center = sign > 0 ? -Math.PI / 2 : Math.PI / 2;
@@ -703,31 +714,41 @@
         while (rel - center >  Math.PI) rel -= 2 * Math.PI;
         while (rel - center < -Math.PI) rel += 2 * Math.PI;
 
-        const headAv = head.angularVelocity || 0;
-        const relAv  = arm.upper.angularVelocity - headAv;
+        const ωa = arm.upper.angularVelocity;
+        const ωh = head.angularVelocity || 0;
+        const relAv = ωa - ωh;
 
-        // Hard stops at the boundary
+        // Decide how much body-relative angular velocity to allow this frame.
+        // Default: leave it alone.
+        let dampedRelAv = relAv;
+        let touched = false;
+
         if (rel < lo) {
             Body.setAngle(arm.upper, head.angle + lo);
-            if (relAv < 0) Body.setAngularVelocity(arm.upper, headAv);
-            return;
-        }
-        if (rel > hi) {
+            if (relAv < 0) { dampedRelAv = 0; touched = true; }
+        } else if (rel > hi) {
             Body.setAngle(arm.upper, head.angle + hi);
-            if (relAv > 0) Body.setAngularVelocity(arm.upper, headAv);
-            return;
-        }
-
-        // Decel zone — quadratic ramp that bleeds outward velocity to zero before
-        // the boundary, so the arm settles instead of slamming into the limit.
-        if (rel > hi - SHOULDER_DECEL_ZONE && relAv > 0) {
+            if (relAv > 0) { dampedRelAv = 0; touched = true; }
+        } else if (rel > hi - SHOULDER_DECEL_ZONE && relAv > 0) {
             const t = (rel - (hi - SHOULDER_DECEL_ZONE)) / SHOULDER_DECEL_ZONE;
             const damp = Math.max(0, 1 - t * t * 4);
-            Body.setAngularVelocity(arm.upper, headAv + relAv * damp);
+            dampedRelAv = relAv * damp;
+            touched = true;
         } else if (rel < lo + SHOULDER_DECEL_ZONE && relAv < 0) {
             const t = ((lo + SHOULDER_DECEL_ZONE) - rel) / SHOULDER_DECEL_ZONE;
             const damp = Math.max(0, 1 - t * t * 4);
-            Body.setAngularVelocity(arm.upper, headAv + relAv * damp);
+            dampedRelAv = relAv * damp;
+            touched = true;
+        }
+
+        if (touched) {
+            // Split the removed body-relative velocity between arm-decel and
+            // head-spin. Sign convention: `lost` keeps the original direction of
+            // relAv, so adding it to the head spins in the SAME direction the arm
+            // was pushing — exactly where the limit has the most slack.
+            const lost = relAv - dampedRelAv;
+            Body.setAngularVelocity(arm.upper, ωa - lost * (1 - SHOULDER_TRANSFER));
+            Body.setAngularVelocity(head,      ωh + lost *      SHOULDER_TRANSFER);
         }
     }
 
@@ -2421,6 +2442,12 @@
         // (Body rotation locked + hard shoulder clamp — no spin/limit sliders.)
 
         // --- Arms ---
+        shoulderTransfer: {
+            label: "Shoulder Energy → Body Spin", min: 0, max: 1, step: 0.01, group: "Arms",
+            help: "When the arm decelerates at its angle limit, this fraction of the lost angular velocity is donated to the body as rotation. 0 = all goes to braking the arm; 1 = the body is shoved in the arm's direction; 0.5 = split.",
+            get: () => SHOULDER_TRANSFER,
+            set: v => { SHOULDER_TRANSFER = v; }
+        },
         handDrive: {
             label: "Hand Drive (arm accel)", min: 0, max: 0.005, step: 0.00005, group: "Arms",
             help: "Force pulling free gloves toward WASD direction. 0 = arms hang limp.",
